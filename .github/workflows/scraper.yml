@@ -1,5 +1,9 @@
 name: Daily Crime Data Scraper
 
+concurrency:
+  group: crime-news-metadata-refresh
+  cancel-in-progress: false
+
 on:
   schedule:
     - cron: '0 0 * * *'  # Run daily at midnight UTC
@@ -18,6 +22,8 @@ jobs:
   scrape-crime-data:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      TZ: UTC
     
     steps:
       - name: Checkout repository
@@ -37,16 +43,22 @@ jobs:
           pip install -r requirements.txt
           python -m spacy download en_core_web_sm
           
+      - name: Record current collection window
+        run: echo "COLLECTION_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
       - name: Run crime data scraper
         run: |
           python main.py --mode full
         env:
           DEBUG_MODE: ${{ github.event.inputs.debug || 'false' }}
+
+      - name: Export current-run metadata only
+        run: python scripts/export_news_metadata.py --input data/crime_articles.csv --output metadata/news-metadata.json --started-at "$COLLECTION_STARTED_AT"
           
       - name: Check for changes
         id: verify-changed-files
         run: |
-          if [ -n "$(git status --porcelain)" ]; then
+          if [ -n "$(git status --porcelain -- metadata/news-metadata.json)" ]; then
             echo "changed=true" >> $GITHUB_OUTPUT
           else
             echo "changed=false" >> $GITHUB_OUTPUT
@@ -57,6 +69,6 @@ jobs:
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add -A
-          git commit -m "🔄 Daily crime data update - $(date +'%Y-%m-%d %H:%M:%S UTC')"
+          git add -- metadata/news-metadata.json
+          git commit -m "Refresh bounded current-run news metadata"
           git push
